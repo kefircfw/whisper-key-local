@@ -321,6 +321,19 @@ onboarding: # First-run setup state (managed automatically)
     # nvidia | amd_rdna2+ | amd_rdna1 | null
     gpu_class: null
 
+http_trigger: # HTTP Trigger API
+    # Enable/disable HTTP trigger server
+    # Allows controlling Whisper Key via HTTP requests (e.g. curl localhost:5757/toggle)
+    enabled: true
+
+    # Port number for the HTTP trigger server
+    port: 5757
+
+    # Bind address
+    # "0.0.0.0" = accept connections from any interface
+    # "127.0.0.1" = localhost only (more secure)
+    host: "0.0.0.0"
+
 voice_commands: # Voice Command Settings
     # Enable/disable voice commands feature
     # true = register command hotkey and load commands file
