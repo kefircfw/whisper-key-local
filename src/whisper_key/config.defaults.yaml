@@ -350,3 +350,16 @@ listening: # Listening Mode (hotkey | continuous | wake_word)
     post_speech_silence_ms: 800
     max_speech_duration_sec: 60.0
     min_speech_duration_sec: 0.5
+
+wake_word: # Wake Word Detection
+    engine: openwakeword
+    cooldown_sec: 2.0
+    vad_pre_filter: true
+    openwakeword:
+        model_paths: []
+        threshold: 0.5
+    porcupine:
+        access_key: ""
+        keyword_paths: []
+        keywords: []
+        sensitivities: []
