@@ -98,14 +98,14 @@ jobs:
           $buildRs = 'pyapp-src\build.rs'
           $build = Get-Content $buildRs -Raw
           if ($build -notmatch 'winresource') {
-            $patch = @'
-
-    if std::env::var("CARGO_CFG_TARGET_OS").unwrap() == "windows" {
-        let mut res = winresource::WindowsResource::new();
-        res.set_icon("icon.ico");
-        res.compile().expect("Failed to compile Windows resources");
-    }
-'@
+            $patch = @(
+              '',
+              '    if std::env::var("CARGO_CFG_TARGET_OS").unwrap() == "windows" {',
+              '        let mut res = winresource::WindowsResource::new();',
+              '        res.set_icon("icon.ico");',
+              '        res.compile().expect("Failed to compile Windows resources");',
+              '    }'
+            ) -join "`n"
             $build = $build -replace '(fn main\(\) \{)', "`$1$patch"
             Set-Content $buildRs $build -NoNewline
           }
