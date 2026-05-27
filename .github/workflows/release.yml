@@ -1,0 +1,178 @@
+name: Build Windows release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Ref or tag to build (defaults to the triggering ref)'
+        required: false
+        type: string
+      create_release:
+        description: 'Create a GitHub Release with the artifacts'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build whisper-key.exe on Windows
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python build tooling
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build
+
+      - name: Build wheel and sdist
+        run: python -m build
+
+      - name: Locate wheel
+        id: wheel
+        shell: pwsh
+        run: |
+          $wheel = (Get-ChildItem -Path dist -Filter *.whl | Select-Object -First 1).FullName
+          if (-not $wheel) {
+            Write-Host "::error::No wheel found in dist/"
+            exit 1
+          }
+          "path=$wheel" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Write-Host "Wheel: $wheel"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~\.cargo\registry
+            ~\.cargo\git
+          key: cargo-${{ runner.os }}-pyapp
+
+      - name: Download pyapp source
+        shell: pwsh
+        run: |
+          $url = 'https://github.com/ofek/pyapp/releases/latest/download/source.tar.gz'
+          Invoke-WebRequest -Uri $url -OutFile pyapp-source.tar.gz
+          New-Item -ItemType Directory -Force -Path pyapp-src | Out-Null
+          tar -xzf pyapp-source.tar.gz -C pyapp-src --strip-components=1
+          if (-not (Test-Path 'pyapp-src\Cargo.toml')) {
+            Write-Host "::error::pyapp source missing Cargo.toml after extract"
+            exit 1
+          }
+
+      - name: Embed Windows icon into pyapp
+        shell: pwsh
+        run: |
+          $iconSrc = 'src\whisper_key\platform\windows\assets\whisperkey-icon.ico'
+          if (-not (Test-Path $iconSrc)) {
+            Write-Host "::warning::Icon not found at $iconSrc, building without icon"
+            exit 0
+          }
+          Copy-Item $iconSrc 'pyapp-src\icon.ico' -Force
+
+          $cargoToml = 'pyapp-src\Cargo.toml'
+          $cargo = Get-Content $cargoToml -Raw
+          if ($cargo -notmatch 'winresource') {
+            $cargo = $cargo -replace '\[build-dependencies\]', "[build-dependencies]`nwinresource = `"0.1`""
+            Set-Content $cargoToml $cargo -NoNewline
+          }
+
+          $buildRs = 'pyapp-src\build.rs'
+          $build = Get-Content $buildRs -Raw
+          if ($build -notmatch 'winresource') {
+            $patch = @(
+              '',
+              '    if std::env::var("CARGO_CFG_TARGET_OS").unwrap() == "windows" {',
+              '        let mut res = winresource::WindowsResource::new();',
+              '        res.set_icon("icon.ico");',
+              '        res.compile().expect("Failed to compile Windows resources");',
+              '    }'
+            ) -join "`n"
+            $build = $build -replace '(fn main\(\) \{)', "`$1$patch"
+            Set-Content $buildRs $build -NoNewline
+          }
+
+      - name: Build whisper-key.exe (console)
+        shell: pwsh
+        env:
+          PYAPP_PROJECT_PATH: ${{ steps.wheel.outputs.path }}
+          PYAPP_PYTHON_VERSION: '3.12'
+          PYAPP_EXEC_CODE: 'from whisper_key.main import main; main()'
+          PYAPP_SELF_COMMAND: 'self'
+          PYAPP_PASS_LOCATION: 'true'
+        run: |
+          New-Item -ItemType Directory -Force -Path dist-pyapp | Out-Null
+          Push-Location pyapp-src
+          cargo build --release
+          if ($LASTEXITCODE -ne 0) {
+            Pop-Location
+            exit 1
+          }
+          Copy-Item target\release\pyapp.exe ..\dist-pyapp\whisper-key.exe -Force
+          Pop-Location
+          $size = (Get-Item dist-pyapp\whisper-key.exe).Length / 1MB
+          Write-Host ("whisper-key.exe -> {0:N2} MB" -f $size)
+
+      - name: Build whisper-key-hideable.exe (GUI subsystem)
+        shell: pwsh
+        env:
+          PYAPP_PROJECT_PATH: ${{ steps.wheel.outputs.path }}
+          PYAPP_PYTHON_VERSION: '3.12'
+          PYAPP_EXEC_CODE: 'from whisper_key.main import main; main()'
+          PYAPP_SELF_COMMAND: 'self'
+          PYAPP_PASS_LOCATION: 'true'
+          PYAPP_IS_GUI: 'true'
+        run: |
+          Push-Location pyapp-src
+          cargo build --release
+          if ($LASTEXITCODE -ne 0) {
+            Pop-Location
+            exit 1
+          }
+          Copy-Item target\release\pyapp.exe ..\dist-pyapp\whisper-key-hideable.exe -Force
+          Pop-Location
+          $size = (Get-Item dist-pyapp\whisper-key-hideable.exe).Length / 1MB
+          Write-Host ("whisper-key-hideable.exe -> {0:N2} MB" -f $size)
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: whisper-key-windows
+          path: |
+            dist-pyapp/whisper-key.exe
+            dist-pyapp/whisper-key-hideable.exe
+            dist/*.whl
+            dist/*.tar.gz
+          if-no-files-found: error
+
+      - name: Create / update GitHub release
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.create_release)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.ref || github.ref_name }}
+          files: |
+            dist-pyapp/whisper-key.exe
+            dist-pyapp/whisper-key-hideable.exe
+            dist/*.whl
+            dist/*.tar.gz
+          generate_release_notes: true
+          draft: false
+          fail_on_unmatched_files: true
